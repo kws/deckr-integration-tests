@@ -198,7 +198,9 @@ async fn run(settings: &Settings) -> Result<(), Box<dyn std::error::Error>> {
                 ..Default::default()
             },
         })?;
-        provider.wait_ready(Some(Duration::from_secs(60))).await?;
+        // A restarted provider can wait for the previous session's 120-second
+        // token to expire. The runner owns the startup/recovery deadline.
+        provider.wait_ready(None).await?;
         settings.report("ready", json!({"serviceId":"interop-rust"}))?;
         let mut terminate =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
