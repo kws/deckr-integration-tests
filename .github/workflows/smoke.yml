@@ -1,0 +1,39 @@
+name: Smoke matrix
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: deckr-integration-tests
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Check out pinned source repositories
+        working-directory: deckr-integration-tests
+        run: python3 scripts/checkout_sources.py
+      - name: Check the runner and Compose configuration
+        working-directory: deckr-integration-tests
+        run: |
+          python3 -m unittest discover -s tests
+          docker compose config --quiet
+      - name: Run all nine pairings with two clients each
+        working-directory: deckr-integration-tests
+        run: python3 scripts/smoke.py
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-evidence
+          path: deckr-integration-tests/artifacts/
+          if-no-files-found: warn

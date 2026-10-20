@@ -1,0 +1,5 @@
+[
+  {"text": "Hello, Deckr!", "count": 42, "enabled": true},
+  {"text": "Grüße · 日本語 · 👋", "nested": {"null": null, "empty": [], "values": [0, -17, 1.25, false, ""]}},
+  {"maximumSafeInteger": 9007199254740991, "__proto__": {"ordinary": "application data"}, "constructor": "also data"}
+]

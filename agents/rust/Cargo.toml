@@ -1,0 +1,12 @@
+[package]
+name = "deckr-integration-worker"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+publish = false
+
+[dependencies]
+deckr = { path = "../../../deckr-core-rust", features = ["nats"] }
+serde_json = "1.0"
+tokio = { version = "1.39", features = ["macros", "rt-multi-thread", "signal", "time"] }
+uuid = { version = "1.23", features = ["v4"] }

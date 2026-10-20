@@ -1,0 +1,144 @@
+# Run through scripts/smoke.py for isolation, assertions and automatic cleanup.
+x-worker: &worker
+  init: true
+  restart: "no"
+  stop_grace_period: 20s
+  volumes:
+    - ${ARTIFACT_DIR:-./artifacts/manual}/participants:/artifacts
+    - ${ARTIFACT_DIR:-./artifacts/manual}/control:/control:ro
+  environment: &environment
+    NATS_URL: nats://nats:4222
+    RUN_ID: ${RUN_ID:-manual}
+    ROUNDS: ${ROUNDS:-2}
+  depends_on:
+    nats:
+      condition: service_healthy
+
+x-typescript: &typescript
+  <<: *worker
+  image: deckr-integration-typescript:${BUILD_TAG:-local}
+  build:
+    context: .
+    dockerfile: docker/typescript.Dockerfile
+    additional_contexts:
+      core: ../deckr-core-typescript
+
+x-python: &python
+  <<: *worker
+  image: deckr-integration-python:${BUILD_TAG:-local}
+  build:
+    context: .
+    dockerfile: docker/python.Dockerfile
+    additional_contexts:
+      core: ../deckr-core-python
+
+x-rust: &rust
+  <<: *worker
+  image: deckr-integration-rust:${BUILD_TAG:-local}
+  build:
+    context: .
+    dockerfile: docker/rust.Dockerfile
+    additional_contexts:
+      core: ../deckr-core-rust
+
+services:
+  nats:
+    image: nats:2.14.0-alpine
+    command: ["-c", "/etc/nats/nats.conf"]
+    volumes:
+      - ./docker/nats.conf:/etc/nats/nats.conf:ro
+      - nats-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8222/healthz?js-enabled-only=true"]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+  provider-typescript:
+    <<: *typescript
+    environment:
+      <<: *environment
+      ROLE: provider
+  provider-python:
+    <<: *python
+    environment:
+      <<: *environment
+      ROLE: provider
+  provider-rust:
+    <<: *rust
+    environment:
+      <<: *environment
+      ROLE: provider
+  client-typescript-typescript:
+    <<: *typescript
+    deploy:
+      replicas: ${CLIENT_REPLICAS:-2}
+    environment:
+      <<: *environment
+      ROLE: client
+      TARGET_LANGUAGE: typescript
+  client-typescript-python:
+    <<: *typescript
+    deploy:
+      replicas: ${CLIENT_REPLICAS:-2}
+    environment:
+      <<: *environment
+      ROLE: client
+      TARGET_LANGUAGE: python
+  client-typescript-rust:
+    <<: *typescript
+    deploy:
+      replicas: ${CLIENT_REPLICAS:-2}
+    environment:
+      <<: *environment
+      ROLE: client
+      TARGET_LANGUAGE: rust
+  client-python-typescript:
+    <<: *python
+    deploy:
+      replicas: ${CLIENT_REPLICAS:-2}
+    environment:
+      <<: *environment
+      ROLE: client
+      TARGET_LANGUAGE: typescript
+  client-python-python:
+    <<: *python
+    deploy:
+      replicas: ${CLIENT_REPLICAS:-2}
+    environment:
+      <<: *environment
+      ROLE: client
+      TARGET_LANGUAGE: python
+  client-python-rust:
+    <<: *python
+    deploy:
+      replicas: ${CLIENT_REPLICAS:-2}
+    environment:
+      <<: *environment
+      ROLE: client
+      TARGET_LANGUAGE: rust
+  client-rust-typescript:
+    <<: *rust
+    deploy:
+      replicas: ${CLIENT_REPLICAS:-2}
+    environment:
+      <<: *environment
+      ROLE: client
+      TARGET_LANGUAGE: typescript
+  client-rust-python:
+    <<: *rust
+    deploy:
+      replicas: ${CLIENT_REPLICAS:-2}
+    environment:
+      <<: *environment
+      ROLE: client
+      TARGET_LANGUAGE: python
+  client-rust-rust:
+    <<: *rust
+    deploy:
+      replicas: ${CLIENT_REPLICAS:-2}
+    environment:
+      <<: *environment
+      ROLE: client
+      TARGET_LANGUAGE: rust
+volumes:
+  nats-data:

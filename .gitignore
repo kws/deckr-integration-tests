@@ -1,0 +1,7 @@
+artifacts/
+node_modules/
+target/
+__pycache__/
+.venv/
+.ruff_cache/
+.DS_Store

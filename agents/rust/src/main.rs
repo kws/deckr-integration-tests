@@ -1,0 +1,266 @@
+use std::collections::BTreeMap;
+use std::env;
+use std::fs;
+use std::path::Path;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use deckr::endpoint::EndpointAddress;
+use deckr::nats::{DeckrRuntime, NatsMessageTransport, NatsStateStore};
+use deckr::schema::SchemaRegistry;
+use deckr::services::*;
+use deckr::session::EndpointSession;
+use deckr::state::StateStorePolicy;
+use serde_json::{json, Value};
+
+type Incoming = ServiceIncoming<NatsStateStore, NatsStateStore, NatsMessageTransport>;
+type View = ProtectedServiceView<NatsStateStore, NatsStateStore, NatsStateStore>;
+
+struct Settings {
+    role: String,
+    target: String,
+    id: String,
+    session: String,
+    run_id: String,
+}
+impl Settings {
+    fn report(&self, kind: &str, data: Value) -> std::io::Result<()> {
+        let mut record = json!({"runId":self.run_id, "id":self.id, "language":"rust", "role":self.role, "target":self.target, "sessionId":self.session});
+        record
+            .as_object_mut()
+            .unwrap()
+            .extend(data.as_object().unwrap().clone());
+        let path = format!("/artifacts/{}.{}.json", self.id, kind);
+        fs::write(format!("{path}.tmp"), serde_json::to_vec(&record)?)?;
+        fs::rename(format!("{path}.tmp"), path)?;
+        println!("{}", json!({"event":kind,"data":record}));
+        Ok(())
+    }
+}
+
+struct Backend {
+    store: ServiceViewStore<NatsStateStore>,
+    retained: Mutex<Vec<View>>,
+    session: String,
+}
+impl ServiceBackend<NatsStateStore, NatsStateStore, NatsMessageTransport> for Backend {
+    fn handle(&self, incoming: Incoming) -> ServiceBackendFuture<'_> {
+        Box::pin(async move {
+            let body = incoming.delivery.message.service_body()?;
+            let mut result = body.params.clone();
+            result.insert("providerLanguage".into(), json!("rust"));
+            result.insert("providerSession".into(), json!(self.session));
+            let context = incoming.connection.context();
+            let key = format!(
+                "{}{}",
+                context.descriptor().views["results"].key_prefix,
+                body.params["operationId"].as_str().unwrap()
+            );
+            let writer = incoming.connection.view(&self.store, "results", None)?;
+            writer.wait_ready(Some(Duration::from_secs(15))).await?;
+            writer.create(&key, result.clone()).await?;
+            self.retained.lock().unwrap().push(writer);
+            incoming.authorize()?;
+            let mut response = body;
+            response.params.clear();
+            response.status = Some(ServiceMessageStatus::Ok);
+            response.result = Some(result);
+            incoming.reply(response).await
+        })
+    }
+    fn shutdown(&self) -> ServiceBackendFuture<'_> {
+        Box::pin(async move {
+            let retained = std::mem::take(&mut *self.retained.lock().unwrap());
+            for view in retained {
+                view.close().await?;
+            }
+            Ok(())
+        })
+    }
+}
+
+async fn run(settings: &Settings) -> Result<(), Box<dyn std::error::Error>> {
+    let directory = env::var("PROTOCOL_DIR").unwrap_or_else(|_| "/protocol".into());
+    let declaration =
+        ServiceProtocol::from_text(&fs::read_to_string(format!("{directory}/service.json"))?)?;
+    let cases: Vec<Value> =
+        serde_json::from_str(&fs::read_to_string(format!("{directory}/cases.json"))?)?;
+    let store_name = declaration.view_families["results"].store_name.clone();
+    let protocol = ValidatedServiceProtocol::new(declaration.clone(), &SchemaRegistry::default())?;
+    let runtime = DeckrRuntime::connect(env::var("NATS_URL")?).await?;
+    let protocols = runtime.protocols().await?;
+    let endpoint = if settings.role == "provider" {
+        "service:interop-rust".to_owned()
+    } else {
+        format!("controller:{}", settings.id)
+    };
+    let session = EndpointSession::with_id(EndpointAddress::parse(endpoint)?, &settings.session)?;
+    let messages = runtime.messaging(session.clone())?;
+    let store = runtime
+        .service_views(
+            &store_name,
+            StateStorePolicy::persistent("integration results"),
+        )
+        .await?;
+
+    if settings.role == "provider" {
+        let backend = Arc::new(Backend {
+            store: store.clone(),
+            retained: Mutex::default(),
+            session: settings.session.clone(),
+        });
+        let permissions = ServicePermissions {
+            operations: ["echo".into()].into(),
+            views: BTreeMap::from([("results".into(), vec![])]),
+        };
+        let provider = ServiceProvider::start(ServiceProviderSpec {
+            advertisements: runtime.beacon().clone(),
+            concord: protocols.concord().clone(),
+            messages: messages.clone(),
+            advertisement: declaration.advertisement_payload(
+                "interop-rust",
+                &settings.session,
+                ServiceBackendStatus::Available,
+            )?,
+            protocol,
+            initial_consent: true,
+            admission: Arc::new(move |_: ServiceConsumer| {
+                let permissions = permissions.clone();
+                async move { Ok(Some(permissions)) }
+            }),
+            backend,
+            options: ServiceProviderOptions {
+                callback_timeout: Duration::from_secs(20),
+                ..Default::default()
+            },
+        })?;
+        provider.wait_ready(Some(Duration::from_secs(60))).await?;
+        settings.report("ready", json!({"serviceId":"interop-rust"}))?;
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        tokio::select! { _ = terminate.recv() => {}, _ = tokio::signal::ctrl_c() => {} }
+        provider.close().await?;
+    } else {
+        assert_eq!(settings.role, "client");
+        let directory = ServiceDirectory::new(protocols.beacon().clone(), declaration)?;
+        directory.try_start()?;
+        let client = ServiceClient::start(ServiceClientSpec {
+            directory: directory.clone(),
+            protocol,
+            concord: protocols.concord().clone(),
+            messages: messages.clone(),
+            target: ServiceTarget::matching(ServiceQuery {
+                service_id: Some(format!("interop-{}", settings.target)),
+                ..Default::default()
+            }),
+            policy: Arc::new(|descriptor: ServiceDescriptor| async move {
+                Ok(Some(service_access(
+                    &descriptor,
+                    ["echo"],
+                    BTreeMap::from([("results".into(), vec![])]),
+                )?))
+            }),
+            options: ServiceClientOptions {
+                negotiation_timeout: Duration::from_secs(30),
+                ..Default::default()
+            },
+        })?;
+        let connection = client.wait_ready(Some(Duration::from_secs(60))).await?;
+        let context = connection.context();
+        let held = context.agreement().contract();
+        let contract = json!({"contractId":held.contract_id, "generation":held.generation});
+        let descriptor = context.descriptor();
+        assert_eq!(
+            descriptor.service_id,
+            format!("interop-{}", settings.target)
+        );
+        assert_eq!(held.generation, 1);
+        settings.report(
+            "ready",
+            json!({"contract":contract,"providerSession":descriptor.session_id}),
+        )?;
+        let deadline = Instant::now() + Duration::from_secs(90);
+        while !Path::new("/control/start").exists() {
+            if Instant::now() > deadline {
+                return Err("start barrier timed out".into());
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let view = connection.view(&store, "results", None)?;
+        view.wait_ready(Some(Duration::from_secs(15))).await?;
+        let mut observations = Vec::new();
+        let rounds: usize = env::var("ROUNDS").unwrap_or_else(|_| "2".into()).parse()?;
+        for round in 0..rounds {
+            for (case_index, payload) in cases.iter().enumerate() {
+                let operation_id = format!("{}-{round}-{case_index}", settings.id);
+                let expected = json!({"operationId":operation_id,"payload":payload,"providerLanguage":settings.target,"providerSession":descriptor.session_id});
+                let body = ServiceMessageBody {
+                    service_namespace: "dev.deckr.integration".into(),
+                    name: "echo".into(),
+                    intent: ServiceIntent::Query,
+                    exchange_pattern: ExchangePattern::RequestReply,
+                    params: json!({"operationId":operation_id,"payload":payload})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                    event: None,
+                    result: None,
+                    error: None,
+                    status: None,
+                };
+                let message = connection.message(body)?;
+                let response = connection
+                    .request(message, Duration::from_secs(15), None)
+                    .await?;
+                let reply = response.service_body()?;
+                assert_eq!(reply.status, Some(ServiceMessageStatus::Ok));
+                let reply = json!(reply.result.unwrap());
+                assert_eq!(reply, expected);
+                let key = format!("{}{}", descriptor.views["results"].key_prefix, operation_id);
+                let entry = tokio::time::timeout(Duration::from_secs(15), async {
+                    loop {
+                        if let Some(entry) = view.get(&key).await? {
+                            break deckr::Result::Ok(entry);
+                        }
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                })
+                .await??;
+                let actual = json!(entry.record.payload);
+                assert_eq!(actual, expected);
+                observations.push(json!({"round":round,"caseIndex":case_index,"operationId":operation_id,"reply":reply,"view":actual}));
+            }
+        }
+        settings.report("result", json!({"status":"pass","contract":contract,"providerSession":descriptor.session_id,"observations":observations}))?;
+        view.close().await?;
+        client.close().await?;
+        directory.close_and_wait().await;
+    }
+    session.close();
+    messages.close().await?;
+    protocols.close().await;
+    runtime.nats().close_sources().await;
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() {
+    let role = env::var("ROLE").expect("ROLE is required");
+    let target = env::var("TARGET_LANGUAGE").unwrap_or_else(|_| "rust".into());
+    let id = format!(
+        "{role}-rust-{target}-{}",
+        env::var("HOSTNAME").unwrap_or_else(|_| uuid::Uuid::new_v4().to_string())
+    );
+    let settings = Settings {
+        role,
+        target,
+        id,
+        session: uuid::Uuid::new_v4().to_string(),
+        run_id: env::var("RUN_ID").expect("RUN_ID is required"),
+    };
+    if let Err(error) = run(&settings).await {
+        let _ = settings.report("result", json!({"status":"fail","error":error.to_string()}));
+        eprintln!("{error:?}");
+        std::process::exit(1);
+    }
+}

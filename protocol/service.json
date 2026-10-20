@@ -1,0 +1,41 @@
+{
+  "namespace": "dev.deckr.integration",
+  "featureId": "dev.deckr.integration.v1",
+  "advertisementProfile": "dev.deckr.integration.advertisement.v1",
+  "useProfile": "dev.deckr.integration.service_use.v1",
+  "operations": {"echo": {}},
+  "messages": {
+    "echo": {
+      "operation": "echo",
+      "intent": "query",
+      "exchangePattern": "request_reply",
+      "direction": "consumer_to_service",
+      "paramsSchema": {
+        "schemaId": "dev.deckr.integration.echo.params.v1",
+        "schema": {
+          "type": "object",
+          "required": ["operationId", "payload"],
+          "properties": {"operationId": {"type": "string", "minLength": 1}, "payload": {"type": "object"}},
+          "additionalProperties": false
+        }
+      },
+      "resultSchema": {
+        "schemaId": "dev.deckr.integration.echo.result.v1",
+        "schema": {
+          "type": "object",
+          "required": ["operationId", "payload", "providerLanguage", "providerSession"],
+          "properties": {
+            "operationId": {"type": "string"},
+            "payload": {"type": "object"},
+            "providerLanguage": {"enum": ["typescript", "python", "rust"]},
+            "providerSession": {"type": "string", "minLength": 1}
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  },
+  "viewFamilies": {
+    "results": {"storeName": "dev_deckr_integration_results_v1", "writer": "service"}
+  }
+}
