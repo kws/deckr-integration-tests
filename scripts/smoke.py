@@ -23,6 +23,25 @@ def require(condition, message):
         raise AssertionError(message)
 
 
+def json_equal(actual, expected):
+    """Compare JSON values without Python's true == 1 / false == 0 coercion."""
+    if isinstance(expected, dict):
+        return (
+            isinstance(actual, dict)
+            and actual.keys() == expected.keys()
+            and all(json_equal(actual[key], value) for key, value in expected.items())
+        )
+    if isinstance(expected, list):
+        return (
+            isinstance(actual, list)
+            and len(actual) == len(expected)
+            and all(json_equal(a, b) for a, b in zip(actual, expected))
+        )
+    if isinstance(expected, bool) or isinstance(actual, bool):
+        return type(actual) is type(expected) and actual == expected
+    return actual == expected
+
+
 def verify_results(records, ready, run_id, replicas, rounds, cases):
     """Verify identity, complete matrix coverage, each reply and every view."""
     clients = [item for item in ready if item["role"] == "client"]
@@ -113,9 +132,13 @@ def verify_results(records, ready, run_id, replicas, rounds, cases):
                 providerLanguage=record["target"],
                 providerSession=record["providerSession"],
             )
-            require(item["reply"] == expected, f"incorrect reply for {operation_id}")
             require(
-                item["view"] == expected, f"incorrect protected view for {operation_id}"
+                json_equal(item["reply"], expected),
+                f"incorrect reply for {operation_id}",
+            )
+            require(
+                json_equal(item["view"], expected),
+                f"incorrect protected view for {operation_id}",
             )
     return {
         "pairs": 9,

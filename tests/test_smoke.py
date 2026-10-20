@@ -64,6 +64,23 @@ class SmokeOracleTests(unittest.TestCase):
     def test_complete_matrix_passes(self):
         self.assertEqual(self.verify(*evidence())["operations"], 9)
 
+    def test_boolean_numeric_coercion_fails(self):
+        for field in ("reply", "view"):
+            for original, corrupted in ((True, 1), (False, 0), (1, True), (0, False)):
+                with self.subTest(field=field, original=original):
+                    records, ready = evidence()
+                    payload = {"nested": [original]}
+                    for record in records:
+                        for value in ("reply", "view"):
+                            record["observations"][0][value]["payload"] = copy.deepcopy(
+                                payload
+                            )
+                    records[0]["observations"][0][field]["payload"]["nested"][0] = (
+                        corrupted
+                    )
+                    with self.assertRaises(AssertionError):
+                        smoke.verify_results(records, ready, "run", 1, 1, [payload])
+
     def test_missing_duplicate_and_foreign_results_fail(self):
         for mutation in (
             lambda rows: rows.pop(),
