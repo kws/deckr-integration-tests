@@ -5,6 +5,30 @@ implementations. Docker Compose runs one service per language and, by default,
 two independent client containers for every client/service pairing: 3 services,
 18 clients and one JetStream-enabled NATS server.
 
+## Place in the project
+
+The [project repository map](https://github.com/kws/deckr#project-repositories)
+describes the reference, three language cores, and this harness.
+[deckr](https://github.com/kws/deckr) owns the specifications, schemas, fixtures,
+vectors, and language-neutral conformance scenarios. The
+[Python](https://github.com/kws/deckr-core-python),
+[Rust](https://github.com/kws/deckr-core-rust), and
+[TypeScript](https://github.com/kws/deckr-core-typescript) cores own their APIs,
+implementation tests, and upstream artifact checks.
+
+This repository owns test applications and orchestration using those public APIs.
+It checks interoperability for the workloads described below; it does not provide
+a production controller, hardware driver, or Action Runtime application.
+Implementation defects belong in the corresponding core repository. Contract
+changes start in the reference repository.
+
+| Check | Purpose | Execution |
+| --- | --- | --- |
+| Runner unit tests | Reject incomplete or incorrect evidence; check orchestration logic. | Host Python, no broker. |
+| Smoke matrix | Service discovery, agreement negotiation, echo replies, and protected-view reads for all nine language pairings. | Docker Compose. |
+| Soak and recovery | Continuous service traffic, renewal, and selected disconnect/crash recovery categories. | Docker Compose. |
+| Native Concord lifecycle | Direct three-language Concord participation, numeric terms, renewal, broker restart, and owner closure. | Native language tools and a local NATS process. |
+
 ## Run the smoke matrix
 
 Requirements: Docker with Compose 2.20+ (including additional build contexts),
@@ -19,9 +43,15 @@ deckr-integration-tests/
 ```
 
 `sources.lock.json` records the exact implementation and specification commits.
-The runner checks the commits and shared specification pins before starting.
+The runner checks for clean checkouts at those commits and matching specification
+pins before starting.
 Language dependencies are installed inside the images using committed lockfiles;
 the host does not need Node, Rust, uv, or the Python Deckr package.
+
+For a fresh workspace with none of the four source siblings present, run
+`python3 scripts/checkout_sources.py` from this repository. It creates detached
+checkouts at the locked commits and refuses an existing destination. For existing
+checkouts or local changes, use the [source-pin workflow](#source-pins-and-coordinated-changes).
 
 From this repository:
 
@@ -222,6 +252,49 @@ Every Compose run writes to `artifacts/<run-id>/`, including failures:
 The evidence directory remains after cleanup. These generated files are ignored
 by Git. Each run starts with empty stores; broker persistence is scoped to that
 run. There is no automated maintenance/reaper in the smoke stack.
+
+## Source pins and coordinated changes
+
+`sources.lock.json` pins the reference and each core independently. Each core also
+pins the reference for its own conformance checks: Python and TypeScript use
+`.deckr-spec-revision`, and Rust uses `spec-revision`. All three files must name
+the reference commit in the harness lock.
+
+For local iteration, use `--allow-source-changes` with `smoke.py`, `soak.py`, or
+`concord.py`. It permits different commits and dirty sibling checkouts and records
+their revisions and fingerprints. It still requires matching specification pins.
+Rebuild worker images after source changes; `--no-build` is for reuse of matching
+images. These development runs do not validate the unchanged committed lock.
+
+For a coordinated update:
+
+1. Define and validate any contract change in `deckr`.
+2. Update the affected cores and their specification pins. Run each core's
+   implementation and conformance checks.
+3. Record the reviewed reference and core commits in `sources.lock.json`, keeping
+   unchanged revisions where applicable. Make new commits available before CI
+   fetches them.
+4. Run the relevant workloads with clean siblings at the locked revisions.
+   Service recovery changes need the recovery sweep; native Concord changes need
+   `concord.py`. Keep evidence and report any skipped coverage.
+
+Package release versions are independent of these Git pins. Documentation-only
+edits do not require moving the integration lock; local runners still require
+`--allow-source-changes` while the source checkouts are dirty.
+
+## Repository layout
+
+```text
+agents/                 Python, Rust, and TypeScript test applications
+protocol/               Shared test-service declaration and payload cases
+scripts/                Source checkout, smoke, soak, native Concord, and proxy runners
+tests/                  Host-side runner tests
+docker/                 Worker/proxy images and NATS configuration
+compose.yaml            Service matrix topology
+sources.lock.json       Reference and core commits used by the harness
+.github/workflows/      Compose smoke/recovery matrix and extended soak
+artifacts/              Generated run evidence (ignored)
+```
 
 ## Development
 
