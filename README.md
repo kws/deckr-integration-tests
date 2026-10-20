@@ -76,8 +76,8 @@ automatically during smoke, so a crash cannot be hidden by a restart policy.
 The smoke workload does not prove event delivery, reverse request/reply,
 or view-watch recovery. The soak runner below adds continuous request/view
 traffic and real disconnect/crash recovery checks.
-The preceding `mixed-language` Concord harness in the parent workspace remains
-a separate test; this suite does not replace its renewal and recovery checks.
+The [native Concord test](#native-concord-lifecycle-test) below additionally
+checks numeric terms hashing, automatic renewal and broker restart.
 
 ## Soak and recovery
 
@@ -165,9 +165,52 @@ seed and all four probabilities; it uses 18 clients and always includes the
 sweep. Local duration is configurable without a fixed maximum. CI runs also
 have the timeout configured in the workflow.
 
-## Evidence
+## Native Concord lifecycle test
 
-Every run writes to `artifacts/<run-id>/`, including failures:
+`scripts/concord.py` runs the existing interop drivers from all three core
+repositories against its own local NATS process. It supplements the managed
+service matrix with direct Concord checks:
+
+- Delayed broker startup and successful connection by all three languages.
+- Each language proposing an agreement attached by the other two, with identical
+  hashes for floating-point, large-integer and negative-zero terms.
+- Real automatic token renewals preserving authority.
+- Broker loss revoking authority, source recovery after broker restart, and
+  fresh proposals without resurrecting old authority.
+- Managed owner-lifetime closure revoking participant authority and constant
+  shared-consumer counts across all rounds.
+
+This test uses the same sibling checkouts and `sources.lock.json`. Unlike the
+Compose runners, it needs native tools: Node 22.18+, Python 3.11+ with uv,
+Rust 1.88+ with Cargo, and a `nats-server` binary supporting Deckr's bucket
+policies (validated with NATS 2.14.0). Install the drivers' dependencies and run
+from this repository:
+
+```sh
+(cd ../deckr-core-python && uv sync --locked)
+(cd ../deckr-core-typescript && npm ci)
+python3 scripts/concord.py --nats-server /absolute/path/to/nats-server
+```
+
+The runner builds the Rust interop example with its locked dependencies.
+`NATS_SERVER_BINARY` or `nats-server` on `PATH` can replace `--nats-server`.
+Allow roughly two minutes for the full test, plus compilation time: renewal uses
+the standard 120-second token lifetime. `--skip-build` reuses an already built
+Rust example; rebuild after changing Rust sources. `--skip-renewal` is a partial quick check
+and does not establish renewal coverage. `--allow-source-changes` records a
+development run against changed sibling checkouts.
+
+Evidence is retained in `artifacts/concord-<run-id>/`: source revisions,
+`summary.json` with completed checks and renewal coverage, `junit.xml`, peer
+stderr logs, broker logs/data, and a build log when building. `--logs` selects
+a new evidence directory; an existing directory is rejected to prevent mixing
+runs. The runner stops its own peers and broker on completion. This optional
+native test is run separately from the Compose CI jobs; process crash/restart
+coverage belongs to the service soak runner.
+
+## Compose evidence
+
+Every Compose run writes to `artifacts/<run-id>/`, including failures:
 
 - `summary.json` and `junit.xml`: outcome and coverage counts.
 - `participants/`: per-process readiness and full operation observations.
@@ -199,7 +242,8 @@ Compose project and never prunes unrelated Docker resources.
 ## Next increments
 
 1. Add event, reverse-request and protected-view watch/update/delete workloads.
-2. Add network blackholes, overlapping faults and broker restart scenarios.
+2. Add network blackholes, overlapping faults and broker restart scenarios for
+   the managed service workloads.
 3. Add command-side-effect reconciliation and exact fault-timeline replay.
 4. Add isolated bucket creator-order/policy tests and optional maintenance runs.
 
