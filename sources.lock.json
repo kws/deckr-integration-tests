@@ -5,11 +5,11 @@
   },
   "deckr-core-typescript": {
     "repository": "kws/deckr-core-typescript",
-    "revision": "14c5b14f09609e0201bbcc806c87aa795434cfc9"
+    "revision": "36a4616e75dbb7dc86eb3e0b4ed16b82b0706b9e"
   },
   "deckr-core-python": {
     "repository": "kws/deckr-core-python",
-    "revision": "6a4ce02e7201742834eece6252b5be6a2f60750c"
+    "revision": "5db25db23a3d111ad99b31fcf56b76b78e5b8daa"
   },
   "deckr-core-rust": {
     "repository": "kws/deckr-core-rust",
