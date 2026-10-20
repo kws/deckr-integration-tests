@@ -253,6 +253,20 @@ The evidence directory remains after cleanup. These generated files are ignored
 by Git. Each run starts with empty stores; broker persistence is scoped to that
 run. There is no automated maintenance/reaper in the smoke stack.
 
+On 2026-10-20, run `20261020T191154Z-e12bdcc7` passed against clean, locked
+sources: specification `c94bf09`, Python `98ce007`, TypeScript `0d4f67a`, and
+Rust `5d140e8`. It rebuilt all workers and exercised three providers, 18 clients,
+all nine language pairings, 108 successful replies, and 108 protected-view reads.
+The stack was removed; local evidence remains under that run's `artifacts/`
+directory. Full revisions are recorded in `sources.lock.json` and the run's
+`sources.json`.
+
+Each core also passed all 78 upstream alpha.2 Action Runtime semantic cases.
+Those checks exercise matching, explicit page targets, generations, and service
+subjects. The Compose smoke run exercises managed service interoperability; it
+does not execute controller page mutations, rendering, real hardware, the
+recovery soak, or the native Concord scenario suite.
+
 ## Source pins and coordinated changes
 
 `sources.lock.json` pins the reference and each core independently. Each core also
