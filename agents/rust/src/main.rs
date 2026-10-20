@@ -18,6 +18,21 @@ mod soak;
 type Incoming = ServiceIncoming<NatsStateStore, NatsStateStore, NatsMessageTransport>;
 type View = ProtectedServiceView<NatsStateStore, NatsStateStore, NatsStateStore>;
 
+fn append_event(path: &Path, record: &Value) -> std::io::Result<()> {
+    // Format before opening the append transaction. Formatting directly into
+    // the file writes each JSON fragment separately: a crash can leave half an
+    // event that the restarted process then joins to its first event.
+    let mut bytes = serde_json::to_vec(record)?;
+    bytes.push(b'\n');
+    static APPEND_LOCK: Mutex<()> = Mutex::new(());
+    let _guard = APPEND_LOCK.lock().unwrap();
+    fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?
+        .write_all(&bytes)
+}
+
 #[derive(Clone)]
 struct Settings {
     role: String,
@@ -33,11 +48,10 @@ impl Settings {
             .as_object_mut()
             .unwrap()
             .extend(data.as_object().unwrap().clone());
-        let mut file = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(format!("/artifacts/{}.events.jsonl", self.id))?;
-        writeln!(file, "{record}")
+        append_event(
+            Path::new(&format!("/artifacts/{}.events.jsonl", self.id)),
+            &record,
+        )
     }
     fn report(&self, kind: &str, data: Value) -> std::io::Result<()> {
         let mut record = json!({"runId":self.run_id, "id":self.id, "language":"rust", "role":self.role, "target":self.target, "sessionId":self.session});
@@ -335,5 +349,44 @@ async fn main() {
         let _ = settings.report("result", json!({"status":"fail","error":error.to_string()}));
         eprintln!("{error:?}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn concurrent_events_remain_complete_json_records() {
+        let path = env::temp_dir().join(format!("deckr-events-{}.jsonl", uuid::Uuid::new_v4()));
+        std::thread::scope(|scope| {
+            for writer in 0..8 {
+                let path = &path;
+                scope.spawn(move || {
+                    for sequence in 0..100 {
+                        append_event(
+                            path,
+                            &json!({"writer":writer,"sequence":sequence,"payload":"x".repeat(4096)}),
+                        )
+                        .unwrap();
+                    }
+                });
+            }
+        });
+        let contents = fs::read_to_string(&path).unwrap();
+        fs::remove_file(path).unwrap();
+        assert!(contents.ends_with('\n'));
+        let records: std::collections::BTreeSet<_> = contents
+            .lines()
+            .map(|line| {
+                let event: Value = serde_json::from_str(line).unwrap();
+                assert_eq!(event["payload"].as_str().unwrap().len(), 4096);
+                (
+                    event["writer"].as_u64().unwrap(),
+                    event["sequence"].as_u64().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(records.len(), 800);
     }
 }
