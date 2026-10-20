@@ -165,7 +165,9 @@ async fn run(settings: &Settings) -> Result<(), Box<dyn std::error::Error>> {
     let store_name = declaration.view_families["results"].store_name.clone();
     let protocol = ValidatedServiceProtocol::new(declaration.clone(), &SchemaRegistry::default())?;
     let runtime = DeckrRuntime::connect(env::var("NATS_URL")?).await?;
+    eprintln!("{}: transport connected", settings.id);
     let protocols = runtime.protocols().await?;
+    eprintln!("{}: protocol sources ready", settings.id);
     let endpoint = if settings.role == "provider" {
         "service:interop-rust".to_owned()
     } else {
@@ -179,6 +181,7 @@ async fn run(settings: &Settings) -> Result<(), Box<dyn std::error::Error>> {
             StateStorePolicy::persistent("integration results"),
         )
         .await?;
+    eprintln!("{}: service view store ready", settings.id);
 
     if settings.role == "provider" {
         let backend = Arc::new(Backend {
@@ -214,7 +217,16 @@ async fn run(settings: &Settings) -> Result<(), Box<dyn std::error::Error>> {
         })?;
         // A restarted provider can wait for the previous session's 120-second
         // token to expire. The runner owns the startup/recovery deadline.
-        provider.wait_ready(None).await?;
+        let ready = provider.wait_ready(None);
+        tokio::pin!(ready);
+        loop {
+            tokio::select! {
+                result = &mut ready => { result?; break; }
+                _ = tokio::time::sleep(Duration::from_secs(5)) => {
+                    eprintln!("{}: provider startup {:?}", settings.id, provider.state());
+                }
+            }
+        }
         settings.report("ready", json!({"serviceId":"interop-rust"}))?;
         let mut terminate =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
