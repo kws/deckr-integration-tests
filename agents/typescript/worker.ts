@@ -6,13 +6,14 @@ import { BeaconDiscovery, BeaconService, BEACON_ADVERTISEMENT_STORE_POLICY, DEFA
 import { ConcordCoordinator, ConcordService, CONCORD_TOKEN_STORE_POLICY, DEFAULT_CONCORD_CONTRACT_STORE_NAME, DEFAULT_CONCORD_TOKEN_STORE_NAME } from "@deckr/core/concord";
 import { EndpointSession } from "@deckr/core/messaging";
 import { connectNats, NatsMessageTransport, NatsStateStore } from "@deckr/core/nats";
-import { ManagedServiceClient, ManagedServiceProvider, serviceProtocolViews, type ServiceProtocol } from "@deckr/core/services";
+import { ManagedServiceClient, ManagedServiceProvider, ServiceViewStoreWriter, serviceProtocolViews, type ServiceProtocol } from "@deckr/core/services";
 import type { JsonObject } from "@deckr/core/json";
+import { consume, event, soaking } from "./soak.ts";
 
 const language = "typescript";
 const role = process.env.ROLE!;
 const target = process.env.TARGET_LANGUAGE ?? language;
-const id = `${role}-${language}-${target}-${process.env.HOSTNAME ?? randomUUID()}`;
+const id = process.env.PARTICIPANT_ID ?? `${role}-${language}-${target}-${process.env.HOSTNAME ?? randomUUID()}`;
 const sessionId = randomUUID();
 const runId = process.env.RUN_ID!;
 const directory = process.env.PROTOCOL_DIR ?? "/protocol";
@@ -27,6 +28,7 @@ function report(kind: string, value: object) {
   writeFileSync(`${path}.tmp`, JSON.stringify(data));
   renameSync(`${path}.tmp`, path);
   console.log(JSON.stringify({ event: kind, ...data }));
+  if (soaking) event(common, kind, value);
 }
 const stop = new Promise<void>(resolve => {
   process.once("SIGTERM", resolve);
@@ -34,6 +36,7 @@ const stop = new Promise<void>(resolve => {
 });
 
 async function main() {
+  if (soaking) event(common, "boot");
   const connection: any = await connectNats({ servers: process.env.NATS_URL, reconnectMaxIntervalSeconds: 1 });
   const transport = new NatsMessageTransport(connection);
   const session = new EndpointSession({ endpoint: role === "provider" ? `service:${serviceId}` : `controller:${id}`, sessionId, transport });
@@ -48,19 +51,39 @@ async function main() {
   } };
   let provider: ManagedServiceProvider | undefined;
   let client: ManagedServiceClient | undefined;
+  const retained = new Map<string, ServiceViewStoreWriter>();
   try {
     if (role === "provider") {
       provider = new ManagedServiceProvider({ ...shared, serviceId,
         onError: error => {
+          if (soaking) { event(common, "providerError", { error: String(error) }); return; }
           report("result", { status: "fail", error: String(error) });
           console.error(error);
           process.exitCode = 1;
         },
         handle: async (body, context) => {
           const result = { ...body.params!, providerLanguage: language, providerSession: sessionId };
-          const writer = await context.viewWriter(storeName);
-          const key = serviceProtocolViews(protocol, serviceId).results!.keyPrefix + body.params!.operationId;
-          await writer.create({ storeName, key }, result);
+          let writer: ServiceViewStoreWriter;
+          if (soaking) {
+            // A continuously updated application view belongs to one agreement.
+            // The convenience viewWriter factory retains a separate operation writer.
+            const key = context.contract.contractId;
+            const existing = retained.get(key);
+            if (existing) writer = existing;
+            else {
+              writer = new ServiceViewStoreWriter({ state: views, context: await context.viewContext() });
+              retained.set(key, writer);
+              const owned = writer;
+              const release = () => { if (retained.get(key) === owned) retained.delete(key); void owned.close(); };
+              context.signal.addEventListener("abort", release, { once: true });
+              if (context.signal.aborted) release();
+            }
+          } else writer = await context.viewWriter(storeName);
+          const key = serviceProtocolViews(protocol, serviceId).results!.keyPrefix + (soaking ? "latest" : body.params!.operationId);
+          if (soaking) {
+            event(common, "execution", { operationId: body.params!.operationId });
+            await writer.put({ storeName, key }, result);
+          } else await writer.create({ storeName, key }, result);
           await context.assertActive();
           return { result };
         },
@@ -81,6 +104,11 @@ async function main() {
       while (!existsSync("/control/start")) {
         assert.ok(Date.now() < deadline, "start barrier timed out");
         await sleep(50);
+      }
+      if (soaking) {
+        await consume(client, common, cases, storeName);
+        report("result", { status: "pass" });
+        return;
       }
       const observations = [];
       for (let round = 0; round < Number(process.env.ROUNDS ?? 2); round++) {
@@ -111,6 +139,7 @@ async function main() {
       report("result", { status: "pass", contract, providerSession, observations });
     }
   } finally {
+    await Promise.all([...retained.values()].map(writer => writer.close()));
     await client?.close();
     await provider?.close();
     await session.close();

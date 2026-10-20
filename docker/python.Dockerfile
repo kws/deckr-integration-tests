@@ -5,7 +5,7 @@ WORKDIR /core
 COPY --from=core /pyproject.toml /uv.lock /README.md /LICENSE ./
 COPY --from=core /src ./src
 RUN uv sync --locked --no-dev --extra nats --no-editable
-COPY agents/python/worker.py /app/worker.py
+COPY agents/python/worker.py agents/python/soak.py /app/
 COPY protocol /protocol
 ENV PROTOCOL_DIR=/protocol PYTHONUNBUFFERED=1
 ENTRYPOINT ["/core/.venv/bin/python", "/app/worker.py"]

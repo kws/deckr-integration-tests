@@ -1,0 +1,66 @@
+name: Extended soak
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: Soak seconds after the complete recovery sweep
+        default: "3600"
+        required: true
+      seed:
+        description: Random fault seed
+        default: "1"
+        required: true
+      client_disconnect_percent:
+        description: Client disconnect probability per tick (percent)
+        default: "5"
+        required: true
+      client_crash_percent:
+        description: Client crash probability per tick (percent)
+        default: "1"
+        required: true
+      service_disconnect_percent:
+        description: Service disconnect probability per tick (percent)
+        default: "5"
+        required: true
+      service_crash_percent:
+        description: Service crash probability per tick (percent)
+        default: "1"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: deckr-integration-tests
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Check out pinned implementations
+        working-directory: deckr-integration-tests
+        run: python3 scripts/checkout_sources.py
+      - name: Run extended recovery soak
+        working-directory: deckr-integration-tests
+        env:
+          DURATION: ${{ inputs.duration }}
+          SEED: ${{ inputs.seed }}
+          CLIENT_DISCONNECT: ${{ inputs.client_disconnect_percent }}
+          CLIENT_CRASH: ${{ inputs.client_crash_percent }}
+          SERVICE_DISCONNECT: ${{ inputs.service_disconnect_percent }}
+          SERVICE_CRASH: ${{ inputs.service_crash_percent }}
+        run: >-
+          python3 scripts/soak.py --fault-sweep --duration "$DURATION" --seed "$SEED"
+          --client-disconnect-percent "$CLIENT_DISCONNECT" --client-crash-percent "$CLIENT_CRASH"
+          --service-disconnect-percent "$SERVICE_DISCONNECT" --service-crash-percent "$SERVICE_CRASH"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: soak-evidence
+          path: deckr-integration-tests/artifacts/
+          if-no-files-found: warn

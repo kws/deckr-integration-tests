@@ -1,4 +1,4 @@
-name: Smoke matrix
+name: Integration matrix
 
 on:
   push:
@@ -9,9 +9,20 @@ permissions:
   contents: read
 
 jobs:
-  smoke:
+  integration:
     runs-on: ubuntu-latest
     timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario:
+          - smoke
+          - steady
+          - random
+          - client-disconnect
+          - client-crash
+          - provider-disconnect
+          - provider-crash
     steps:
       - uses: actions/checkout@v6
         with:
@@ -28,12 +39,30 @@ jobs:
           python3 -m unittest discover -s tests
           docker compose config --quiet
       - name: Run all nine pairings with two clients each
+        if: matrix.scenario == 'smoke'
         working-directory: deckr-integration-tests
         run: python3 scripts/smoke.py
+      - name: Run steady traffic across a token renewal
+        if: matrix.scenario == 'steady'
+        working-directory: deckr-integration-tests
+        run: python3 scripts/soak.py --duration 125
+      - name: Run seeded random faults
+        if: matrix.scenario == 'random'
+        working-directory: deckr-integration-tests
+        run: >-
+          python3 scripts/soak.py --duration 125 --seed 20261020
+          --client-disconnect-percent 15 --client-crash-percent 15
+          --service-disconnect-percent 15 --service-crash-percent 15
+      - name: Verify one fault category across all nine pairings
+        if: matrix.scenario != 'smoke' && matrix.scenario != 'steady' && matrix.scenario != 'random'
+        working-directory: deckr-integration-tests
+        env:
+          FAULT_CASE: ${{ matrix.scenario }}
+        run: python3 scripts/soak.py --duration 125 --fault-sweep --fault-case "$FAULT_CASE"
       - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: smoke-evidence
+          name: integration-evidence-${{ matrix.scenario }}
           path: deckr-integration-tests/artifacts/
           if-no-files-found: warn

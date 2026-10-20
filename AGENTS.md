@@ -9,5 +9,7 @@ The sibling `deckr` repository owns Deckr contracts and conformance scenarios.
 Implementation fixes belong in the corresponding core repository.
 
 Run `python3 -m unittest discover -s tests` for runner checks and
-`python3 scripts/smoke.py` for the real-broker matrix. Never report a skipped
+`python3 scripts/smoke.py` for the real-broker matrix. Recovery changes also need
+`python3 scripts/soak.py --fault-sweep --duration 125` against the real stack.
+Never report a skipped
 language or missing result as a passing complete matrix. Keep failure evidence.

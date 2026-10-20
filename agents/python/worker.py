@@ -8,6 +8,7 @@ import traceback
 import uuid
 
 import anyio
+from soak import SOAKING, consume as consume_soak, event, install_diagnostics
 
 from deckr.bindings.nats import DeckrNatsSubstrate
 from deckr.contracts.lanes import DEFAULT_MESSAGE_CONTRACT_REGISTRY
@@ -19,7 +20,10 @@ from deckr.services import ServiceProtocol, ServiceViewRef, ServiceViewStore
 LANGUAGE = "python"
 ROLE = os.environ["ROLE"]
 TARGET = os.environ.get("TARGET_LANGUAGE", LANGUAGE)
-IDENTITY = f"{ROLE}-{LANGUAGE}-{TARGET}-{os.environ.get('HOSTNAME', uuid.uuid4().hex)}"
+IDENTITY = (
+    os.environ.get("PARTICIPANT_ID")
+    or f"{ROLE}-{LANGUAGE}-{TARGET}-{os.environ.get('HOSTNAME', uuid.uuid4().hex)}"
+)
 SESSION = uuid.uuid4().hex
 DIRECTORY = Path(os.environ.get("PROTOCOL_DIR", "/protocol"))
 DECLARATION = json.loads((DIRECTORY / "service.json").read_text())
@@ -34,6 +38,14 @@ PROTOCOL = ServiceProtocol(
     view_families=DECLARATION["viewFamilies"],
 )
 STORE = DECLARATION["viewFamilies"]["results"]["storeName"]
+COMMON = dict(
+    runId=os.environ["RUN_ID"],
+    id=IDENTITY,
+    language=LANGUAGE,
+    role=ROLE,
+    target=TARGET,
+    sessionId=SESSION,
+)
 
 
 def report(kind, **values):
@@ -51,6 +63,8 @@ def report(kind, **values):
     temporary.write_text(json.dumps(data))
     temporary.replace(path)
     print(json.dumps(dict(event=kind, **data)), flush=True)
+    if SOAKING:
+        event(COMMON, kind, **values)
 
 
 async def provide(runtime, endpoint):
@@ -65,38 +79,61 @@ async def provide(runtime, endpoint):
             ) as provider:
                 report("ready", serviceId="interop-python")
 
-                async def requests():
+                async def handle(request):
+                    authorized = request.authorization
+                    params = thaw_json(authorized.body.params)
+                    result = dict(
+                        **params,
+                        providerLanguage=LANGUAGE,
+                        providerSession=SESSION,
+                    )
+                    contract = provider.contract(authorized.contract)
+                    if contract is None:
+                        raise RuntimeError("provider lost agreement authority")
+                    key = provider.descriptor.views["results"].key_prefix + (
+                        "latest" if SOAKING else params["operationId"]
+                    )
+                    if SOAKING:
+                        event(COMMON, "execution", operationId=params["operationId"])
+                        await contract.view_access(store).put(
+                            ServiceViewRef(store_name=STORE, key=key), result
+                        )
+                    else:
+                        await contract.view_access(store).create(
+                            ServiceViewRef(store_name=STORE, key=key), result
+                        )
+                    await provider.authorize(request.message)
+                    body = authorized.body.to_dict()
+                    body.pop("params", None)
+                    body.update(status="ok", result=result)
+                    await endpoint.reply_to(
+                        request.message,
+                        message_type="serviceMessage",
+                        body=body,
+                    )
+
+                active = 0
+
+                async def respond(request):
+                    nonlocal active
                     try:
-                        async for request in provider.requests():
-                            if request.failure:
-                                raise request.failure
-                            authorized = request.authorization
-                            params = thaw_json(authorized.body.params)
-                            result = dict(
-                                **params,
-                                providerLanguage=LANGUAGE,
-                                providerSession=SESSION,
-                            )
-                            contract = provider.contract(authorized.contract)
-                            if contract is None:
-                                raise RuntimeError("provider lost agreement authority")
-                            key = (
-                                provider.descriptor.views["results"].key_prefix
-                                + params["operationId"]
-                            )
-                            await contract.view_access(store).create(
-                                ServiceViewRef(store_name=STORE, key=key), result
-                            )
-                            await provider.authorize(request.message)
-                            body = authorized.body.to_dict()
-                            body.pop("params", None)
-                            body.update(status="ok", result=result)
-                            await endpoint.reply_to(
-                                request.message,
-                                message_type="serviceMessage",
-                                body=body,
-                            )
+                        if request.failure:
+                            raise request.failure
+                        with anyio.fail_after(
+                            float(os.environ.get("OPERATION_TIMEOUT", "10"))
+                            if SOAKING
+                            else None
+                        ):
+                            await handle(request)
                     except Exception as exc:
+                        if SOAKING and not isinstance(exc, AssertionError):
+                            event(
+                                COMMON,
+                                "providerError",
+                                error=f"{type(exc).__name__}: {exc}",
+                                stack=traceback.format_exc(),
+                            )
+                            return
                         report(
                             "result",
                             status="fail",
@@ -104,6 +141,24 @@ async def provide(runtime, endpoint):
                             stack=traceback.format_exc(),
                         )
                         raise
+                    finally:
+                        active -= 1
+
+                async def requests():
+                    nonlocal active
+                    async for request in provider.requests():
+                        if active >= 64:
+                            event(
+                                COMMON,
+                                "providerError",
+                                error="handler capacity exceeded",
+                            )
+                            continue
+                        active += 1
+                        if SOAKING:
+                            tasks.start_soon(respond, request)
+                        else:
+                            await respond(request)
 
                 tasks.start_soon(requests)
                 with anyio.open_signal_receiver(
@@ -130,6 +185,10 @@ async def consume(runtime, endpoint):
             with anyio.fail_after(90):
                 while not Path("/control/start").exists():
                     await anyio.sleep(0.05)
+            if SOAKING:
+                await consume_soak(service, COMMON, CASES, STORE)
+                report("result", status="pass")
+                return
             observations = []
             for round_index in range(int(os.environ.get("ROUNDS", "2"))):
                 for case_index, payload in enumerate(CASES):
@@ -188,6 +247,9 @@ async def consume(runtime, endpoint):
 
 
 async def main():
+    if SOAKING:
+        event(COMMON, "boot")
+        install_diagnostics()
     bus = DeckrNatsSubstrate(
         url=os.environ["NATS_URL"],
         lane_contracts=DEFAULT_MESSAGE_CONTRACT_REGISTRY,

@@ -224,6 +224,7 @@ def build_fingerprint(sources):
         *ROOT.glob("agents/*/src/*.rs"),
         *ROOT.glob("docker/*.Dockerfile"),
         *ROOT.glob("protocol/*.json"),
+        ROOT / "scripts/proxy.py",
     ]
     for path in sorted(inputs):
         digest.update(str(path.relative_to(ROOT)).encode())

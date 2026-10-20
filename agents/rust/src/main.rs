@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
+use std::io::Write;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -12,10 +13,12 @@ use deckr::services::*;
 use deckr::session::EndpointSession;
 use deckr::state::StateStorePolicy;
 use serde_json::{json, Value};
+mod soak;
 
 type Incoming = ServiceIncoming<NatsStateStore, NatsStateStore, NatsMessageTransport>;
 type View = ProtectedServiceView<NatsStateStore, NatsStateStore, NatsStateStore>;
 
+#[derive(Clone)]
 struct Settings {
     role: String,
     target: String,
@@ -24,6 +27,18 @@ struct Settings {
     run_id: String,
 }
 impl Settings {
+    fn event(&self, kind: &str, data: Value) -> std::io::Result<()> {
+        let mut record = json!({"runId":self.run_id,"id":self.id,"language":"rust","role":self.role,"target":self.target,"sessionId":self.session,"kind":kind,"atMs":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()});
+        record
+            .as_object_mut()
+            .unwrap()
+            .extend(data.as_object().unwrap().clone());
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(format!("/artifacts/{}.events.jsonl", self.id))?;
+        writeln!(file, "{record}")
+    }
     fn report(&self, kind: &str, data: Value) -> std::io::Result<()> {
         let mut record = json!({"runId":self.run_id, "id":self.id, "language":"rust", "role":self.role, "target":self.target, "sessionId":self.session});
         record
@@ -34,14 +49,18 @@ impl Settings {
         fs::write(format!("{path}.tmp"), serde_json::to_vec(&record)?)?;
         fs::rename(format!("{path}.tmp"), path)?;
         println!("{}", json!({"event":kind,"data":record}));
+        if soak::enabled() {
+            self.event(kind, data)?;
+        }
         Ok(())
     }
 }
 
 struct Backend {
     store: ServiceViewStore<NatsStateStore>,
-    retained: Mutex<Vec<View>>,
+    retained: Mutex<BTreeMap<String, View>>,
     session: String,
+    settings: Settings,
 }
 impl ServiceBackend<NatsStateStore, NatsStateStore, NatsMessageTransport> for Backend {
     fn handle(&self, incoming: Incoming) -> ServiceBackendFuture<'_> {
@@ -54,12 +73,35 @@ impl ServiceBackend<NatsStateStore, NatsStateStore, NatsMessageTransport> for Ba
             let key = format!(
                 "{}{}",
                 context.descriptor().views["results"].key_prefix,
-                body.params["operationId"].as_str().unwrap()
+                if soak::enabled() {
+                    "latest"
+                } else {
+                    body.params["operationId"].as_str().unwrap()
+                }
             );
-            let writer = incoming.connection.view(&self.store, "results", None)?;
+            let pointer = context.agreement().contract().contract_id.clone();
+            let existing = self.retained.lock().unwrap().get(&pointer).cloned();
+            let writer = match existing {
+                Some(writer) => writer,
+                None => incoming.connection.view(&self.store, "results", None)?,
+            };
             writer.wait_ready(Some(Duration::from_secs(15))).await?;
-            writer.create(&key, result.clone()).await?;
-            self.retained.lock().unwrap().push(writer);
+            if soak::enabled() {
+                self.settings
+                    .event(
+                        "execution",
+                        json!({"operationId":body.params["operationId"]}),
+                    )
+                    .map_err(|error| deckr::Error::Invalid(error.to_string()))?;
+                if let Some(entry) = writer.get(&key).await? {
+                    writer.update(&key, result.clone(), entry.revision).await?;
+                } else {
+                    writer.create(&key, result.clone()).await?;
+                }
+            } else {
+                writer.create(&key, result.clone()).await?;
+            }
+            self.retained.lock().unwrap().insert(pointer, writer);
             incoming.authorize()?;
             let mut response = body;
             response.params.clear();
@@ -68,10 +110,28 @@ impl ServiceBackend<NatsStateStore, NatsStateStore, NatsMessageTransport> for Ba
             incoming.reply(response).await
         })
     }
+    fn disconnected(
+        &self,
+        connection: ServiceConnection<NatsStateStore, NatsStateStore, NatsMessageTransport>,
+    ) -> ServiceBackendFuture<'_> {
+        Box::pin(async move {
+            let pointer = connection
+                .context()
+                .agreement()
+                .contract()
+                .contract_id
+                .clone();
+            let writer = self.retained.lock().unwrap().remove(&pointer);
+            if let Some(writer) = writer {
+                writer.close().await?;
+            }
+            Ok(())
+        })
+    }
     fn shutdown(&self) -> ServiceBackendFuture<'_> {
         Box::pin(async move {
             let retained = std::mem::take(&mut *self.retained.lock().unwrap());
-            for view in retained {
+            for view in retained.into_values() {
                 view.close().await?;
             }
             Ok(())
@@ -80,6 +140,9 @@ impl ServiceBackend<NatsStateStore, NatsStateStore, NatsMessageTransport> for Ba
 }
 
 async fn run(settings: &Settings) -> Result<(), Box<dyn std::error::Error>> {
+    if soak::enabled() {
+        settings.event("boot", json!({}))?;
+    }
     let directory = env::var("PROTOCOL_DIR").unwrap_or_else(|_| "/protocol".into());
     let declaration =
         ServiceProtocol::from_text(&fs::read_to_string(format!("{directory}/service.json"))?)?;
@@ -108,6 +171,7 @@ async fn run(settings: &Settings) -> Result<(), Box<dyn std::error::Error>> {
             store: store.clone(),
             retained: Mutex::default(),
             session: settings.session.clone(),
+            settings: settings.clone(),
         });
         let permissions = ServicePermissions {
             operations: ["echo".into()].into(),
@@ -186,53 +250,58 @@ async fn run(settings: &Settings) -> Result<(), Box<dyn std::error::Error>> {
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        let view = connection.view(&store, "results", None)?;
-        view.wait_ready(Some(Duration::from_secs(15))).await?;
-        let mut observations = Vec::new();
-        let rounds: usize = env::var("ROUNDS").unwrap_or_else(|_| "2".into()).parse()?;
-        for round in 0..rounds {
-            for (case_index, payload) in cases.iter().enumerate() {
-                let operation_id = format!("{}-{round}-{case_index}", settings.id);
-                let expected = json!({"operationId":operation_id,"payload":payload,"providerLanguage":settings.target,"providerSession":descriptor.session_id});
-                let body = ServiceMessageBody {
-                    service_namespace: "dev.deckr.integration".into(),
-                    name: "echo".into(),
-                    intent: ServiceIntent::Query,
-                    exchange_pattern: ExchangePattern::RequestReply,
-                    params: json!({"operationId":operation_id,"payload":payload})
-                        .as_object()
-                        .unwrap()
-                        .clone(),
-                    event: None,
-                    result: None,
-                    error: None,
-                    status: None,
-                };
-                let message = connection.message(body)?;
-                let response = connection
-                    .request(message, Duration::from_secs(15), None)
-                    .await?;
-                let reply = response.service_body()?;
-                assert_eq!(reply.status, Some(ServiceMessageStatus::Ok));
-                let reply = json!(reply.result.unwrap());
-                assert_eq!(reply, expected);
-                let key = format!("{}{}", descriptor.views["results"].key_prefix, operation_id);
-                let entry = tokio::time::timeout(Duration::from_secs(15), async {
-                    loop {
-                        if let Some(entry) = view.get(&key).await? {
-                            break deckr::Result::Ok(entry);
+        if soak::enabled() {
+            soak::consume(&client, &store, settings, &cases).await?;
+            settings.report("result", json!({"status":"pass"}))?;
+        } else {
+            let view = connection.view(&store, "results", None)?;
+            view.wait_ready(Some(Duration::from_secs(15))).await?;
+            let mut observations = Vec::new();
+            let rounds: usize = env::var("ROUNDS").unwrap_or_else(|_| "2".into()).parse()?;
+            for round in 0..rounds {
+                for (case_index, payload) in cases.iter().enumerate() {
+                    let operation_id = format!("{}-{round}-{case_index}", settings.id);
+                    let expected = json!({"operationId":operation_id,"payload":payload,"providerLanguage":settings.target,"providerSession":descriptor.session_id});
+                    let body = ServiceMessageBody {
+                        service_namespace: "dev.deckr.integration".into(),
+                        name: "echo".into(),
+                        intent: ServiceIntent::Query,
+                        exchange_pattern: ExchangePattern::RequestReply,
+                        params: json!({"operationId":operation_id,"payload":payload})
+                            .as_object()
+                            .unwrap()
+                            .clone(),
+                        event: None,
+                        result: None,
+                        error: None,
+                        status: None,
+                    };
+                    let message = connection.message(body)?;
+                    let response = connection
+                        .request(message, Duration::from_secs(15), None)
+                        .await?;
+                    let reply = response.service_body()?;
+                    assert_eq!(reply.status, Some(ServiceMessageStatus::Ok));
+                    let reply = json!(reply.result.unwrap());
+                    assert_eq!(reply, expected);
+                    let key = format!("{}{}", descriptor.views["results"].key_prefix, operation_id);
+                    let entry = tokio::time::timeout(Duration::from_secs(15), async {
+                        loop {
+                            if let Some(entry) = view.get(&key).await? {
+                                break deckr::Result::Ok(entry);
+                            }
+                            tokio::time::sleep(Duration::from_millis(20)).await;
                         }
-                        tokio::time::sleep(Duration::from_millis(20)).await;
-                    }
-                })
-                .await??;
-                let actual = json!(entry.record.payload);
-                assert_eq!(actual, expected);
-                observations.push(json!({"round":round,"caseIndex":case_index,"operationId":operation_id,"reply":reply,"view":actual}));
+                    })
+                    .await??;
+                    let actual = json!(entry.record.payload);
+                    assert_eq!(actual, expected);
+                    observations.push(json!({"round":round,"caseIndex":case_index,"operationId":operation_id,"reply":reply,"view":actual}));
+                }
             }
+            settings.report("result", json!({"status":"pass","contract":contract,"providerSession":descriptor.session_id,"observations":observations}))?;
+            view.close().await?;
         }
-        settings.report("result", json!({"status":"pass","contract":contract,"providerSession":descriptor.session_id,"observations":observations}))?;
-        view.close().await?;
         client.close().await?;
         directory.close_and_wait().await;
     }
@@ -247,10 +316,12 @@ async fn run(settings: &Settings) -> Result<(), Box<dyn std::error::Error>> {
 async fn main() {
     let role = env::var("ROLE").expect("ROLE is required");
     let target = env::var("TARGET_LANGUAGE").unwrap_or_else(|_| "rust".into());
-    let id = format!(
-        "{role}-rust-{target}-{}",
-        env::var("HOSTNAME").unwrap_or_else(|_| uuid::Uuid::new_v4().to_string())
-    );
+    let id = env::var("PARTICIPANT_ID").unwrap_or_else(|_| {
+        format!(
+            "{role}-rust-{target}-{}",
+            env::var("HOSTNAME").unwrap_or_else(|_| uuid::Uuid::new_v4().to_string())
+        )
+    });
     let settings = Settings {
         role,
         target,
