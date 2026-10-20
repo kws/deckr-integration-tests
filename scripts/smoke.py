@@ -270,10 +270,10 @@ def check_processes(statuses, expected_clients, finished=False):
     return all(item["State"] == "exited" for item in clients)
 
 
-def write_junit(path, summary, records):
+def write_junit(path, summary, records, *, suite_name="deckr-smoke"):
     suite = ET.Element(
         "testsuite",
-        name="deckr-smoke",
+        name=suite_name,
         tests=str(len(records) if summary["status"] == "pass" else 1),
         failures="0" if summary["status"] == "pass" else "1",
     )

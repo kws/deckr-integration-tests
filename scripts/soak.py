@@ -944,6 +944,7 @@ def main():
                 for identity, row in runner.members.items()
                 if identity in runner.clients
             ],
+            suite_name=f"deckr-soak-{runner.args.fault_case}",
         )
         print(
             f"{summary['status'].upper()}: {runner.output / 'summary.json'}", flush=True
