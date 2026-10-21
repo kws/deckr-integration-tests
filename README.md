@@ -258,8 +258,16 @@ sources: specification `c94bf09`, Python `98ce007`, TypeScript `0d4f67a`, and
 Rust `5d140e8`. It rebuilt all workers and exercised three providers, 18 clients,
 all nine language pairings, 108 successful replies, and 108 protected-view reads.
 The stack was removed; local evidence remains under that run's `artifacts/`
-directory. Full revisions are recorded in `sources.lock.json` and the run's
-`sources.json`.
+directory. Full revisions are recorded in the run's `sources.json`.
+
+On 2026-10-21, run `20261021T070236Z-526a1175` passed after updating the Rust
+pin to `03989fd`, which adds scoped Action Runtime input/output validation.
+The specification, Python, and TypeScript pins remained as above. All four source
+checkouts were clean at the locked revisions. The run rebuilt all workers and
+again exercised three providers, 18 clients, all nine pairings, 108 successful
+replies, and 108 protected-view reads. The stack was removed; local evidence
+remains under that run's `artifacts/` directory. The Rust regression test separately
+checks configured capability preferences, stale generations, and invalid payloads.
 
 Each core also passed all 78 upstream Action Runtime semantic cases at
 specification revision `c94bf09`.
