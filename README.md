@@ -261,7 +261,8 @@ The stack was removed; local evidence remains under that run's `artifacts/`
 directory. Full revisions are recorded in `sources.lock.json` and the run's
 `sources.json`.
 
-Each core also passed all 78 upstream alpha.2 Action Runtime semantic cases.
+Each core also passed all 78 upstream Action Runtime semantic cases at
+specification revision `c94bf09`.
 Those checks exercise matching, explicit page targets, generations, and service
 subjects. The Compose smoke run exercises managed service interoperability; it
 does not execute controller page mutations, rendering, real hardware, the
