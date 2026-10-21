@@ -28,6 +28,8 @@ changes start in the reference repository.
 | Smoke matrix | Service discovery, agreement negotiation, echo replies, and protected-view reads for all nine language pairings. | Docker Compose. |
 | Soak and recovery | Continuous service traffic, renewal, and selected disconnect/crash recovery categories. | Docker Compose. |
 | Native Concord lifecycle | Direct three-language Concord participation, numeric terms, renewal, broker restart, and owner closure. | Native language tools and a local NATS process. |
+| Action Runtime matrix | All 16 messages, availability, authorization fences, and provider successors in nine language pairings. | Native language peers and local NATS. |
+| Python controller / foreign providers | Controller lifecycle, input/output, pages, rendering, races, and authority loss with three provider languages. | Controller pytest suite and native provider peers over local NATS. |
 
 ## Run the smoke matrix
 
@@ -269,6 +271,68 @@ The Compose smoke matrix checks managed service interoperability at the source
 revisions in `sources.lock.json`. It does not execute Action Runtime rendering
 between languages, controller page mutations, real hardware, recovery soak, or
 the native Concord scenario suite. Those workloads require separate checks.
+
+## Native Action Runtime workloads
+
+These are separate workloads from the generic Compose echo matrix. They use
+public managed service boundaries with each core's Action Runtime declaration,
+payload models and authorization. Test control uses local JSON-line stdio; Deckr
+messages, discovery, agreements and availability travel over real NATS.
+
+Use Node 22.18+, Rust/Cargo through `mise`, and a Python 3.11+ environment with
+the sibling Python core installed editable and its `supervised-nats` extra.
+For the controller workload, install the sibling `deckr-controller` and its
+development dependencies into that same environment. Install TypeScript core
+dependencies with `npm ci` in its checkout. From this repository, with that
+Python environment active:
+
+```sh
+python scripts/action_runtime.py --allow-source-changes
+python scripts/controller_action_runtime.py --allow-source-changes
+```
+
+In the parent Deckr workspace, `../.venv/bin/python` selects the shared editable
+environment. Both commands build the Rust peer with locked dependencies and
+start/stop their own localhost brokers. `--skip-build` reuses the existing Rust
+peer; use it only after building the current Rust sources. Development runs use
+`--allow-source-changes` to record working changes without moving source pins.
+Omit it to require the locked reference/core sources. The controller checkout is
+an additional recorded input; it is not part of `sources.lock.json`.
+
+The nine-pair matrix checks all 16 declared messages in both protocol directions
+(144 initial deliveries), exact service subjects, endpoint/session/contract
+identities, render-result causation, fenced availability, malformed page payloads,
+and rejected session/contract substitutions through the public authorizers.
+Every pairing restarts its provider gracefully and verifies a fresh session and
+successor contract, fresh availability, rejection of predecessor authority, no
+event replay, and two fresh deliveries. Reference payloads are independent wire
+examples; they do not model a controller's page or binding state machine.
+
+The controller runner executes
+[`tests/test_cross_language_action_runtime.py`](https://github.com/kws/deckr-controller/blob/main/tests/test_cross_language_action_runtime.py)
+against Python, TypeScript and Rust provider processes: ten scenarios, 30 cases.
+It verifies lifecycle and shared capability matches, single input delivery,
+authorized hardware output, page open/replace/close generations, text/image/clear
+rendering, error results and causation, reverse completion, failed newer work,
+direct-frame ordering, overlay composition, late hardware rejection, hardware
+claim loss, provider successors, and service loss during page planning. Gated
+render backends make ordering checks deterministic. The hardware manager uses
+the real managed API with a recording backend, not a physical device.
+
+Both runners reject missing pairs, scenarios, languages, duplicate results and
+skips. Evidence is retained under `artifacts/action-runtime-*` and
+`artifacts/controller-action-runtime-*`: summary, JUnit, source revisions and
+hashes (including untracked harness/controller inputs), provider transcripts,
+stderr, and broker logs/data. The controller module skips in the ordinary
+controller suite unless explicitly enabled by this runner; those skips never
+count as a successful cross-language run.
+
+These workloads do not prove abrupt process death, broker/network failure,
+token renewal over long durations, physical device behavior, every optional
+owner-defined render format, or application reference policies in every
+specialized Action Runtime facade. The matrix tests managed service transport
+and typed Action Runtime payloads; the controller suite supplies real controller
+policy. The existing conformance checks and service soak cover different claims.
 
 ## Source pins and coordinated changes
 
