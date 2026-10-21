@@ -253,28 +253,22 @@ The evidence directory remains after cleanup. These generated files are ignored
 by Git. Each run starts with empty stores; broker persistence is scoped to that
 run. There is no automated maintenance/reaper in the smoke stack.
 
-On 2026-10-20, run `20261020T191154Z-e12bdcc7` passed against clean, locked
-sources: specification `c94bf09`, Python `98ce007`, TypeScript `0d4f67a`, and
-Rust `5d140e8`. It rebuilt all workers and exercised three providers, 18 clients,
-all nine language pairings, 108 successful replies, and 108 protected-view reads.
-The stack was removed; local evidence remains under that run's `artifacts/`
-directory. Full revisions are recorded in the run's `sources.json`.
+The locked sources pass the full smoke matrix: three providers, 18 clients, all
+nine language pairings, 108 successful replies, and 108 protected-view reads.
+Validation evidence is in `artifacts/20261021T074208Z-80a76b67/`, including the
+exact clean source revisions in `sources.json`. All worker images were rebuilt
+for this run, and its stack was removed after validation.
 
-On 2026-10-21, run `20261021T070236Z-526a1175` passed after updating the Rust
-pin to `03989fd`, which adds scoped Action Runtime input/output validation.
-The specification, Python, and TypeScript pins remained as above. All four source
-checkouts were clean at the locked revisions. The run rebuilt all workers and
-again exercised three providers, 18 clients, all nine pairings, 108 successful
-replies, and 108 protected-view reads. The stack was removed; local evidence
-remains under that run's `artifacts/` directory. The Rust regression test separately
-checks configured capability preferences, stale generations, and invalid payloads.
+Each core checks the upstream Action Runtime semantic cases for requirement
+matching, explicit page targets, generations, service subjects, and rendering
+admission. Rendering coverage includes its message models, support declarations,
+result correlation, and managed command/result delivery. Controller content
+rendering and output ordering are checked in the controller repository.
 
-Each core also passed all 78 upstream Action Runtime semantic cases at
-specification revision `c94bf09`.
-Those checks exercise matching, explicit page targets, generations, and service
-subjects. The Compose smoke run exercises managed service interoperability; it
-does not execute controller page mutations, rendering, real hardware, the
-recovery soak, or the native Concord scenario suite.
+The Compose smoke matrix checks managed service interoperability at the source
+revisions in `sources.lock.json`. It does not execute Action Runtime rendering
+between languages, controller page mutations, real hardware, recovery soak, or
+the native Concord scenario suite. Those workloads require separate checks.
 
 ## Source pins and coordinated changes
 

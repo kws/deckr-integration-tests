@@ -1,18 +1,18 @@
 {
   "deckr": {
     "repository": "kws/deckr",
-    "revision": "c94bf097d1895cdbbefe67612ca38c76c07b1c54"
+    "revision": "9cfa639cf05516e9f2947bf64b2c276ff5eac5dd"
   },
   "deckr-core-typescript": {
     "repository": "kws/deckr-core-typescript",
-    "revision": "0d4f67ad3ec479902d8c6d694238da45d818f01c"
+    "revision": "c545dcb4ca9266717b009e245ad436522e59368b"
   },
   "deckr-core-python": {
     "repository": "kws/deckr-core-python",
-    "revision": "98ce00754a32436fab5fb56a5911aa2a37156bee"
+    "revision": "1c99436fbbce474ba982397415142999601aefc9"
   },
   "deckr-core-rust": {
     "repository": "kws/deckr-core-rust",
-    "revision": "03989fd19e638d2dad93f7fb8434ea9460d871ae"
+    "revision": "1aaa3a52e3ede52807e873bc7addb7b726306c9f"
   }
 }
