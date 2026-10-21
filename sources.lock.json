@@ -9,10 +9,10 @@
   },
   "deckr-core-python": {
     "repository": "kws/deckr-core-python",
-    "revision": "1c99436fbbce474ba982397415142999601aefc9"
+    "revision": "00ae83de664a756d04c56dfe91a75384db01133d"
   },
   "deckr-core-rust": {
     "repository": "kws/deckr-core-rust",
-    "revision": "1aaa3a52e3ede52807e873bc7addb7b726306c9f"
+    "revision": "fe3c8c9d7b825d8997a987ca3e94fd481c9fbf9f"
   }
 }
