@@ -4,6 +4,7 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import { BeaconDiscovery, BeaconService, BEACON_ADVERTISEMENT_STORE_POLICY, DEFAULT_BEACON_ADVERTISEMENT_STORE_NAME } from "@deckr/core/beacon";
 import { ConcordCoordinator, ConcordService, CONCORD_TOKEN_STORE_POLICY, DEFAULT_CONCORD_CONTRACT_STORE_NAME, DEFAULT_CONCORD_TOKEN_STORE_NAME } from "@deckr/core/concord";
+import { restartHandoffFromEnv } from "@deckr/core/restart";
 import { EndpointSession } from "@deckr/core/messaging";
 import { connectNats, NatsMessageTransport, NatsStateStore } from "@deckr/core/nats";
 import { ManagedServiceClient, ManagedServiceProvider, ServiceViewStoreWriter, serviceProtocolViews, type ServiceProtocol } from "@deckr/core/services";
@@ -40,12 +41,13 @@ async function main() {
   const connection: any = await connectNats({ servers: process.env.NATS_URL, reconnectMaxIntervalSeconds: 1 });
   const transport = new NatsMessageTransport(connection);
   const session = new EndpointSession({ endpoint: role === "provider" ? `service:${serviceId}` : `controller:${id}`, sessionId, transport });
+  console.log(JSON.stringify({ event: "endpoint-session", endpoint: session.endpoint, sessionId: session.sessionId }));
   const beaconStore = await NatsStateStore.open({ connection, bucket: DEFAULT_BEACON_ADVERTISEMENT_STORE_NAME, policy: BEACON_ADVERTISEMENT_STORE_POLICY });
   const contracts = await NatsStateStore.open({ connection, bucket: DEFAULT_CONCORD_CONTRACT_STORE_NAME });
   const tokens = await NatsStateStore.open({ connection, bucket: DEFAULT_CONCORD_TOKEN_STORE_NAME, policy: CONCORD_TOKEN_STORE_POLICY });
   const views = await NatsStateStore.open({ connection, bucket: storeName });
   const beacon = new BeaconService(new BeaconDiscovery(beaconStore));
-  const concord = new ConcordService(new ConcordCoordinator(contracts, tokens));
+  const concord = new ConcordService(new ConcordCoordinator(contracts, tokens), { restart: restartHandoffFromEnv() });
   const shared = { protocol, beacon, concord, endpoint: session.lane("services"), stateFor: (name: string) => {
     assert.equal(name, storeName); return views;
   } };

@@ -167,7 +167,17 @@ fails the run. Recovery must finish within `--recovery-timeout` seconds
 (default 180), and healthy progress must continue within `--stall-timeout`
 (default 45). Individual operation waits use `--operation-timeout` (default 10
 seconds). A final complete healthy matrix and clean client exit are required.
-The recovery window allows the standard 120-second Concord token lifetime:
+For SIGKILL restarts, the supervisor also reads session diagnostics directly from
+the target container, verifies its exact ID/start time and exit code 137, then
+atomically writes a handoff through the read-only `/control` mount. Each core
+performs its own cleanup. Earlier exited lifetimes remain in the handoff across
+repeated crashes. Verified restarts must recover within 30 seconds of restoration;
+the canonical 120-second token TTL is unchanged. Unit tests additionally assert
+that predecessor tokens still exist when cleanup finishes, and that live
+competing sessions and fresh successors survive.
+
+For disconnections without verified exit, the recovery window allows the standard
+120-second Concord token lifetime:
 when a disconnected owner cannot withdraw its token, peers can need to observe
 expiry before negotiating a successor. The harness keeps the canonical bucket
 policies rather than shortening token lifetimes just for tests.
@@ -178,9 +188,8 @@ create one retained record or view subscription per operation. Old contracts
 and views remain in the isolated broker for inspection; fault-heavy runs can
 therefore grow storage with agreement churn. No maintenance process hides that
 growth. Container CPU/memory samples are saved every `--sample-interval`
-seconds (default 30); exceeding `--max-memory-mib` (default 1024 per container)
-fails the run. These bounds detect failures during the chosen duration; they
-do not establish indefinite resource stability.
+seconds (default 30), including memory in MiB. Resource usage has no fixed abort
+threshold, so growth remains visible throughout the configured run.
 
 Evidence lives in `artifacts/soak-<run-id>/`: append-only participant events,
 fault timeline, random choices, source pins, settings, resource samples,

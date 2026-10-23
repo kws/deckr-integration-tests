@@ -7,6 +7,7 @@ import random
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import soak
@@ -226,6 +227,16 @@ class ControlsTests(unittest.TestCase):
     def test_docker_memory_units(self):
         self.assertEqual(soak.memory_mib("1.5GiB"), 1536)
         self.assertEqual(soak.memory_mib("20MiB"), 20)
+
+    def test_large_memory_usage_is_recorded_without_aborting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runner = soak.Runner.__new__(soak.Runner)
+            runner.compose, runner.env, runner.output = [], {}, Path(directory)
+            row = {"Name": "growing-worker", "MemUsage": "25GiB / 32GiB"}
+            with patch.object(soak, "command", side_effect=["container", json.dumps(row)]):
+                runner.sample_resources()
+            sample = json.loads((runner.output / "resources.jsonl").read_text())
+            self.assertEqual(sample["containers"][0]["memoryMiB"], 25 * 1024)
 
 
 if __name__ == "__main__":

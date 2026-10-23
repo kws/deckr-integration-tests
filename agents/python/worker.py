@@ -15,6 +15,7 @@ from deckr.contracts.lanes import DEFAULT_MESSAGE_CONTRACT_REGISTRY
 from deckr.contracts.models import thaw_json
 from deckr.core.kv import KvBucketPolicy
 from deckr.runtime import Deckr
+from deckr.core.restart import restart_handoff_from_env
 from deckr.services import ServiceProtocol, ServiceViewRef, ServiceViewStore
 
 LANGUAGE = "python"
@@ -255,9 +256,15 @@ async def main():
         lane_contracts=DEFAULT_MESSAGE_CONTRACT_REGISTRY,
         reconnect_max_interval_seconds=1,
     )
-    async with Deckr(message_bus=bus) as runtime:
+    async with Deckr(message_bus=bus, restart=restart_handoff_from_env()) as runtime:
         address = (
             "service:interop-python" if ROLE == "provider" else f"controller:{IDENTITY}"
+        )
+        print(
+            json.dumps(
+                dict(event="endpoint-session", endpoint=address, sessionId=SESSION)
+            ),
+            flush=True,
         )
         async with runtime.endpoint(address, session_id=SESSION) as endpoint:
             if ROLE == "provider":

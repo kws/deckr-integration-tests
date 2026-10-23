@@ -174,6 +174,7 @@ async fn run(settings: &Settings) -> Result<(), Box<dyn std::error::Error>> {
         format!("controller:{}", settings.id)
     };
     let session = EndpointSession::with_id(EndpointAddress::parse(endpoint)?, &settings.session)?;
+    println!("{}", json!({"event":"endpoint-session", "endpoint":session.endpoint(), "sessionId":session.id()}));
     let messages = runtime.messaging(session.clone())?;
     let store = runtime
         .service_views(

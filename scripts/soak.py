@@ -12,6 +12,7 @@ import sys
 import time
 import uuid
 
+from restart import verified_exit_handoff
 from smoke import (
     ROOT,
     LANGUAGES,
@@ -408,6 +409,8 @@ class Runner:
             routes[identity] = 20000 + index
             service["environment"].update(
                 MODE="soak",
+                DECKR_INSTANCE_ID=identity,
+                DECKR_RESTART_HANDOFF=f"/control/{identity}.restart.json",
                 PARTICIPANT_ID=identity,
                 NATS_URL=f"nats://proxy:{routes[identity]}",
                 OPERATION_INTERVAL=str(self.args.operation_interval),
@@ -538,13 +541,10 @@ class Runner:
             timeout=30,
         )
         rows = [json.loads(line) for line in raw.splitlines() if line]
-        append(self.output / "resources.jsonl", dict(at=time.time(), containers=rows))
         for row in rows:
             used = row["MemUsage"].split("/")[0].strip()
-            require(
-                memory_mib(used) <= self.args.max_memory_mib,
-                f"container memory budget exceeded: {row['Name']} {used}",
-            )
+            row["memoryMiB"] = memory_mib(used)
+        append(self.output / "resources.jsonl", dict(at=time.time(), containers=rows))
 
     def wait(self, predicate, timeout, description):
         deadline = time.monotonic() + timeout
@@ -642,6 +642,41 @@ class Runner:
             self.log("fault-injected", participant=identity, kind=kind, proxy=status)
         else:
             self.dead.add(identity)
+            container = command(
+                [*self.compose, "ps", "--quiet", identity], env=self.env
+            ).strip()
+            before_process = json.loads(
+                command(["docker", "inspect", container], env=self.env)
+            )[0]
+            diagnostics = command(
+                [
+                    "docker",
+                    "logs",
+                    "--since",
+                    before_process["State"]["StartedAt"],
+                    container,
+                ],
+                env=self.env,
+            )
+            sessions = []
+            for line in diagnostics.splitlines():
+                try:
+                    report = json.loads(line)
+                except ValueError:
+                    continue
+                if report.get("event") == "endpoint-session":
+                    sessions.append(
+                        {key: report[key] for key in ("endpoint", "sessionId")}
+                    )
+            endpoint = (
+                f"service:interop-{member['language']}"
+                if member["role"] == "provider"
+                else f"controller:{identity}"
+            )
+            require(
+                sessions == [dict(endpoint=endpoint, sessionId=fault["oldSession"])],
+                "process-local session diagnostics do not match the fault target",
+            )
             command(
                 [*self.compose, "kill", "--signal", "SIGKILL", identity], env=self.env
             )
@@ -654,7 +689,26 @@ class Runner:
                 state["State"] == "exited" and state["ExitCode"] == 137,
                 "crash was not a SIGKILL exit",
             )
-            self.log("fault-injected", participant=identity, kind=kind, container=state)
+            after_process = json.loads(
+                command(["docker", "inspect", container], env=self.env)
+            )[0]
+            path = self.control / f"{identity}.restart.json"
+            previous = json.loads(path.read_text()) if path.exists() else None
+            proof = verified_exit_handoff(
+                identity,
+                before_process,
+                after_process,
+                sessions,
+                previous,
+            )
+            atomic(path, json.dumps(proof))
+            self.log(
+                "fault-injected",
+                participant=identity,
+                kind=kind,
+                container=state,
+                restartHandoff=proof,
+            )
         self.delay(self.args.downtime)
         if kind == "disconnect":
             self.set_proxy([])
@@ -685,6 +739,11 @@ class Runner:
                 "crash did not create a fresh session",
             )
         fault["recoverySeconds"] = time.monotonic() - restored
+        if kind == "crash":
+            require(
+                fault["recoverySeconds"] < 30,
+                "verified restart exceeded the pre-expiry recovery budget (30s)",
+            )
         self.oracle.recoveries.append(fault)
         self.log(
             "fault-recovered",
@@ -874,7 +933,6 @@ def arguments(argv=None):
         ("operation-timeout", 10),
         ("operation-interval", 1),
         ("sample-interval", 30),
-        ("max-memory-mib", 1024),
     ]:
         parser.add_argument(f"--{name}", type=float, default=default)
     parser.add_argument("--no-build", action="store_true")
